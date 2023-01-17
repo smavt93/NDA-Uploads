@@ -1,9 +1,0 @@
-﻿rc_columns_to_pull,rc_rename_columns,nda_column_names
-guid,guid,subjectkey,
-pseudoguid,subject_id,src_subject_id
-subject_id,int_date,interview_date
-int_date,ethnicity,ethnic_group
-dob,
-sex,
-race,
-ethnicity
