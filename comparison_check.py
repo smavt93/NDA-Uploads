@@ -8,11 +8,14 @@ pd.options.mode.chained_assignment = None
 
 ndar_crosswalk = "https://github.com/smavt93/NDA-Uploads/blob/main/ndar_subject01_crosswalk.xlsx?raw=true"
 ndar_template = "https://raw.githubusercontent.com/smavt93/NDA-Uploads/main/ndar_subject01_template.csv"
-wasi_crosswalk = ""
+wasi_crosswalk = "https://github.com/smavt93/NDA-Uploads/blob/main/wasi201_crosswalk.xlsx?raw=true"
+wasi_template = "https://github.com/smavt93/NDA-Uploads/raw/main/wasi201_template.csv"
 demo01_crosswalk = "https://github.com/smavt93/NDA-Uploads/blob/main/demo01_crosswalk.xlsx?raw=true"
 demo01_template = "https://github.com/smavt93/NDA-Uploads/raw/main/demo01_template.csv"
-matrics01_crosswalk = ""
+matrics01_crosswalk = "https://github.com/smavt93/NDA-Uploads/blob/main/matrics01_crosswalk.xlsx?raw=true"
+matrics01_template = "https://github.com/smavt93/NDA-Uploads/raw/main/matrics01_template.csv"
 topf01_crosswalk = ""
+topf01_template = ""
 today = date.today()
 st.title('VUMC NDA Upload Dashboard')
 operation_selection = st.sidebar.selectbox("What would you like to do?", ["--", "Create Docs", "QC"])
@@ -406,12 +409,91 @@ if operation_selection == "Create Docs":
     
     with tab3:
         st.header("Wasi201")
-        col1, col2 = st.columns(2)
-        with col1:
-            full_database = st.file_uploader("Full RC data export:", key = "wasi")
-        with col2:
-            previous_wasi = st.file_uploader("Previous Wasi201 Upload Doc:")
-    
+        st.markdown("### Before you get started:")
+        st.markdown("1. All you need is the full RC data export.")
+        st.markdown("2. After files are processed, you should proceed to the QC portion of the dashboard to finalize the document")
+        full_database = st.file_uploader("Full RC data export:", key = "wasi")
+        additional_excluded_subject = st.text_input("Are there any additional subjects that you would like to exclude?")
+        if full_database is not None:
+            full_db = pd.read_csv(full_database)
+            # Creating a list of excluded subjects that is adaptable
+            reliability_db = full_db[full_db['subject_id'].str.contains('R')] # Removing the reliability subjects
+            reliability_list = reliability_db['subject_id'].tolist()
+            
+            # Exclusion princples: visit_1_arm_1, doesn't have a GUID or Pseudoguid AND is excluded (47)
+            excluded_subject_db_1 = full_db.loc[(full_db['redcap_event_name'] == 'visit_1_arm_1')]
+            excluded_subject_db_2 = excluded_subject_db_1.loc[((excluded_subject_db_1['guid'].isna()) & (excluded_subject_db_1['pseudoguid'].isna()))]
+            excluded_subject_db_3 = excluded_subject_db_2.query("dx1 in [47] or subject_id in ['10055-20', '10178-20']")
+            excluded_subject_filter_list = excluded_subject_db_3['subject_id'].values.tolist()
+            final_excluded_subject_list = excluded_subject_filter_list + reliability_list # Final list of excluded subjects
+
+            # Filtering for the desired datatype
+            first_filter_db_wasii = full_db.loc[((full_db['np_date'].notnull()) | (full_db['wasiii_data_complete'] == 2))]
+            # Removing 752-22 as data will never be recovered # no wasii data collected for 424-21 # Making it flexible in case someone wants to exclude more subjects
+            second_filter_db_wasii = first_filter_db_wasii.query("subject_id not in @final_excluded_subject_list and subject_id not in ['10424-21','10752-22', @additional_excluded_subject]") 
+
+            # Renaming columns and pullinf the desired columns
+            crosswalk_db = pd.read_excel(wasi_crosswalk)
+
+            rc_columns_to_change = crosswalk_db.rc_rename_columns.values.tolist()
+            cleaned_rc_columns_to_change = [x for x in rc_columns_to_change if str(x) != 'nan']
+            nda_columns_to_change = crosswalk_db['nda_column_names'].values.tolist()
+            cleaned_nda_columns_to_change = [x for x in nda_columns_to_change if str(x) != 'nan']
+            rc_columns_to_pull = crosswalk_db['rc_columns_to_pull'].values.tolist()
+            crosswalk_dict = {cleaned_rc_columns_to_change[i]: cleaned_nda_columns_to_change[i] for i in range(len(cleaned_rc_columns_to_change))}
+            # Desired columns
+            wasii_desired_columns = second_filter_db_wasii.loc[:, rc_columns_to_pull]
+            # Renaming columns
+            wasii_subjects = wasii_desired_columns.rename(columns = crosswalk_dict)
+
+            # Filling na items with -8
+            wasii_subjects.fillna(-8,inplace=True)
+
+            # Using the pseudoguid values if subject has no guid but does have pseudoguid data # for this dataset it doesn't apply but a good check regardless
+            wasii_subjects['subjectkey'] = wasii_subjects.apply(lambda row: row['pseudoguid'] if row['subjectkey'] == -8 else row['subjectkey'], axis = 1)
+
+            # Converting the sex column into NDA format # 0 --> M, 1 --> F
+            def cat1(row):
+                if row['sex'] == 0:
+                    return 'M'
+                if row['sex'] == 1:
+                    return 'F'
+
+            wasii_subjects['sex'] = wasii_subjects.apply(lambda row: cat1(row), axis = 1)
+
+            # Converting the handedness column into NDA format # 0 --> L, 1 --> R
+            def cat2(row):
+                if row['handedness'] == 0:
+                    return 'L'
+                if row['handedness'] == 1:
+                    return 'R'
+
+            wasii_subjects['handedness'] = wasii_subjects.apply(lambda row: cat2(row), axis = 1)
+            
+            # Getting the interview age column
+            wasii_subjects['interview_date'] = pd.to_datetime(wasii_subjects['interview_date'])
+            wasii_subjects['dob'] = pd.to_datetime(wasii_subjects['dob'])
+            wasii_subjects['interview_age'] = ((wasii_subjects.interview_date - wasii_subjects.dob)/np.timedelta64(1, 'M'))
+            wasii_subjects['interview_age'] = wasii_subjects['interview_age'].astype(int) # Still problems with dates but don't have time to figure them out now
+            wasii_subjects['interview_date'] = wasii_subjects['interview_date'].dt.strftime("%m/%d/%y") # prevents the export from having the time component as well (not needed)
+
+            # Adding the 'visit' column that is not found in the RC db
+            wasii_subjects['visit'] = 'neuropsych'
+
+            # Dropping unecessary columns
+            wasii_subjects.drop(['pseudoguid', 'dob'], axis = 1, inplace=True)
+
+            # Setting index to facilitate concat with template file
+            wasii_db_prep = wasii_subjects.set_index('subjectkey')
+
+            # Creating the joined file
+            wasii_template_db = pd.read_csv(wasi_template, index_col = 'subjectkey')
+            wasii_db_final = pd.concat([wasii_template_db, wasii_db_prep])
+            st.write(wasii_db_final)
+            st.write("Number of Subjects:", len(wasii_db_final['src_subject_id']))
+            csv = convert_df(wasii_db_final)
+            st.download_button("Download Data as a CSV", data = csv, file_name = f'wasii_subject_export {today}.csv', mime = 'text/csv')
+
     with tab4:
         st.header("Topf01")
         col1, col2 = st.columns(2)
